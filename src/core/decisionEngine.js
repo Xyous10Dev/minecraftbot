@@ -68,7 +68,13 @@ class DecisionEngine {
    * Check for emergency situations that override all other logic
    */
   checkEmergency() {
-    // Low health emergency
+    const preparationElapsed = this.preparationStartTime 
+      ? (Date.now() - this.preparationStartTime) / 1000 
+      : Infinity;
+    
+    const isInPreparation = preparationElapsed < this.bot.config.preparationSeconds;
+    
+    // Low health emergency (always applies)
     if (this.bot.health && this.bot.health < 6) {
       if (this.currentState !== BotState.EMERGENCY && 
           this.currentState !== BotState.RETREAT &&
@@ -79,11 +85,33 @@ class DecisionEngine {
       }
     }
     
-    // Target suddenly appears during non-combat state
-    if (this.targetTracker.isTargetInEngagementRange(16) &&
-        this.currentState === BotState.GATHERING ||
-        this.currentState === BotState.UPGRADING ||
-        this.currentState === BotState.NETHER_PROGRESS) {
+    // CRITICAL: During preparation phase, do NOT initiate combat
+    // Only defend if directly attacked (target hits us first)
+    if (isInPreparation) {
+      // Don't start hunting during preparation
+      if (this.currentState === BotState.GATHERING ||
+          this.currentState === BotState.UPGRADING ||
+          this.currentState === BotState.NETHER_PROGRESS) {
+        
+        // Only interrupt if target is VERY close AND aggressive
+        // Otherwise continue preparation
+        if (this.targetTracker.isTargetInMeleeRange() && 
+            this.targetTracker.getTimeSinceLastSeen() < 1000) {
+          // Target is right here - might need to defend
+          // But still prefer to avoid engagement during prep
+          this.logger.tagged('DECISION', 'INFO', 'Target nearby during preparation - avoiding engagement');
+          // Don't transition to intercept, stay in preparation
+        }
+        return false; // Don't interrupt preparation
+      }
+    }
+    
+    // After preparation: Target appears during non-combat state
+    if (!isInPreparation && 
+        this.targetTracker.isTargetInEngagementRange(16) &&
+        (this.currentState === BotState.GATHERING ||
+         this.currentState === BotState.UPGRADING ||
+         this.currentState === BotState.NETHER_PROGRESS)) {
       this.logger.tagged('DECISION', 'INFO', 'Target spotted! Interrupting current task.');
       this.transitionTo(BotState.INTERCEPTING);
       return true;
@@ -104,16 +132,7 @@ class DecisionEngine {
       ? (Date.now() - this.targetDeathTime) / 1000
       : Infinity;
     
-    // Check if target just died
-    if (!this.targetTracker.targetPosition && 
-        this.targetTracker.getTimeSinceLastSeen() < 5000 &&
-        this.currentState !== BotState.TARGET_DEAD) {
-      this.targetDeathTime = Date.now();
-      this.logger.tagged('DECISION', 'INFO', 'Target eliminated! Starting upgrade window.');
-      return BotState.TARGET_DEAD;
-    }
-    
-    // Five-minute upgrade window after target death
+    // Five-minute upgrade window after target death (takes priority)
     if (this.targetDeathTime && targetDeadElapsed < this.bot.config.targetRespawnWindowSeconds) {
       return BotState.FIVE_MINUTE_UPGRADE;
     } else if (this.targetDeathTime && targetDeadElapsed >= this.bot.config.targetRespawnWindowSeconds) {
@@ -121,30 +140,39 @@ class DecisionEngine {
       this.logger.tagged('DECISION', 'INFO', 'Upgrade window complete. Resuming hunt.');
     }
     
-    // Preparation phase (first 60 seconds)
+    // CRITICAL: Preparation phase (first 60 seconds) - NO HUNTING
     if (!this.preparationStartTime) {
       this.preparationStartTime = Date.now();
       return BotState.PREPARATION;
     }
     
     if (preparationElapsed < this.bot.config.preparationSeconds) {
+      // During preparation, only gather/craft, never hunt
+      // Exception: self-defense if attacked
       return BotState.PREPARATION;
     }
     
-    // After preparation, decide based on target proximity
-    if (this.targetTracker.isTargetInEngagementRange()) {
+    // After preparation period ends, normal hunting logic applies
+    
+    // Check if target is currently visible
+    if (this.targetTracker.lastSeenPosition && 
+        this.targetTracker.getTimeSinceLastSeen() < 3000) {
+      
       if (this.targetTracker.isTargetInMeleeRange()) {
         return BotState.COMBAT;
       }
-      return BotState.CHASE;
+      
+      if (this.targetTracker.isTargetInEngagementRange()) {
+        return BotState.CHASE;
+      }
     }
     
-    // Target is far - decide between pursuit and upgrading
+    // Target is far or not recently seen - intercept or search
     if (this.targetTracker.lastSeenPosition) {
       return BotState.INTERCEPTING;
     }
     
-    // No target info - search or upgrade
+    // No target info - search
     return BotState.SEARCHING;
   }
   
@@ -285,12 +313,19 @@ class DecisionEngine {
    * Get current status for dashboard
    */
   getStatus() {
+    const preparationElapsed = this.preparationStartTime 
+      ? (Date.now() - this.preparationStartTime) / 1000 
+      : 0;
+    
+    const prepRemaining = Math.max(0, this.bot.config.preparationSeconds - preparationElapsed);
+    
     return {
       currentState: this.currentState,
       currentTask: this.currentTask,
       currentPriority: this.currentPriority,
-      preparationTime: this.preparationStartTime ? 
-        (Date.now() - this.preparationStartTime) / 1000 : 0,
+      preparationTime: preparationElapsed,
+      preparationRemaining: prepRemaining,
+      isInPreparation: preparationElapsed < this.bot.config.preparationSeconds,
       targetDeathTime: this.targetDeathTime,
       lastDecision: this.lastDecisionTime,
       telemetry: {

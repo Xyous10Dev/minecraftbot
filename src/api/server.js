@@ -267,6 +267,10 @@ class DashboardServer {
           <span class="stat-value" id="targetPlayer">-</span>
         </div>
         <div class="stat-row">
+          <span class="stat-label">Minecraft Server</span>
+          <span class="stat-value" id="mcServer">localhost:25565</span>
+        </div>
+        <div class="stat-row">
           <span class="stat-label">Dimension</span>
           <span class="stat-value" id="dimension">-</span>
         </div>
@@ -419,8 +423,21 @@ class DashboardServer {
       if (data.decisionInfo) {
         document.getElementById('currentState').textContent = data.decisionInfo.currentState || '-';
         document.getElementById('currentTask').textContent = data.decisionInfo.currentTask || '-';
-        document.getElementById('prepTime').textContent = 
-          Math.ceil(data.decisionInfo.preparationTime || 0) + 's';
+        
+        // Show preparation timer prominently
+        const prepRemaining = data.decisionInfo.preparationRemaining;
+        const isInPrep = data.decisionInfo.isInPreparation;
+        if (isInPrep && prepRemaining !== undefined) {
+          document.getElementById('prepTime').textContent = 
+            `PREPARATION ${Math.ceil(prepRemaining)}s / 60s`;
+          document.getElementById('prepTime').style.color = '#d29922';
+        } else if (prepRemaining !== undefined) {
+          document.getElementById('prepTime').textContent = 'READY TO HUNT';
+          document.getElementById('prepTime').style.color = '#3fb950';
+        } else {
+          document.getElementById('prepTime').textContent = Math.ceil(data.decisionInfo.preparationTime || 0) + 's';
+        }
+        
         document.getElementById('decisionsCount').textContent = 
           data.decisionInfo.telemetry?.totalDecisions || 0;
         document.getElementById('totalKills').textContent = 
